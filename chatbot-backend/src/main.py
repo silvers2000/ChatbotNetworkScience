@@ -13,18 +13,25 @@ from src.routes.user import user_bp
 from src.routes.chat import chat_bp
 
 app = Flask(__name__, static_folder=os.path.join(os.path.dirname(__file__), 'static'))
-app.config['SECRET_KEY'] = os.getenv('SECRET_KEY')
 
-# Enable CORS for all routes
+# --- DB config: use /tmp (always writable on Render) ---
+DB_FILE = os.path.join("/tmp", "app.db")
+app.config["SQLALCHEMY_DATABASE_URI"] = os.getenv("DATABASE_URL", f"sqlite:///{DB_FILE}")
+app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
+
+# Secret key from env
+app.config["SECRET_KEY"] = os.getenv("SECRET_KEY")
+
+# Ensure the directory exists (for custom paths)
+os.makedirs(os.path.dirname(DB_FILE), exist_ok=True)
+
 CORS(app)
 
+# register blueprints
 app.register_blueprint(user_bp, url_prefix='/api')
 app.register_blueprint(chat_bp, url_prefix='/api')
 
-# uncomment if you need to use database
-app.config['SQLALCHEMY_DATABASE_URI'] = f"sqlite:///{os.path.join(os.path.dirname(__file__), 'database', 'app.db')}"
-app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
-db.init_app(app)
+# Create tables inside an app context (NOT at import top-level)
 with app.app_context():
     db.create_all()
 
