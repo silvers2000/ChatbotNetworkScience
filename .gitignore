@@ -1,0 +1,22 @@
+# Node
+node_modules/
+chatbot-frontend/dist/
+
+# Python
+**/__pycache__/
+*.pyc
+chatbot-backend/.venvchat*/
+.venvchat*/
+
+# Env / secrets
+*.envcd .
+chatbot-backend/.env
+
+# Local DBs
+chatbot-backend/src/database/*.db
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
