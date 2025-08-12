@@ -7,6 +7,8 @@ from io import BytesIO
 import uuid
 from datetime import datetime
 from dotenv import load_dotenv
+import pandas as pd
+from pptx import Presentation
 
 from src.models.user import db
 from src.models.auth import UserSession
@@ -20,9 +22,66 @@ chat_bp = Blueprint('chat', __name__)
 genai.configure(api_key=os.getenv('GEMINI_API_KEY'))
 model = genai.GenerativeModel('gemini-2.5-flash')
 
-# Store PDF content in memory per-session (ephemeral, in-process only)
-# Keyed by session_id so a new chat does not inherit a previous chat's PDF
-session_pdf_content = {}
+# Store document content in memory per-session (ephemeral, in-process only)
+# Keyed by session_id so a new chat does not inherit a previous chat's document
+session_doc_content = {}
+
+MAX_CONTEXT_CHARS = 10000
+
+def _truncate(text: str, limit: int = MAX_CONTEXT_CHARS) -> str:
+    if not text:
+        return ""
+    return text if len(text) <= limit else text[:limit] + "\n..."
+
+def _extract_pdf_text(file_storage) -> tuple[str, int]:
+    reader = PyPDF2.PdfReader(BytesIO(file_storage.read()))
+    text_content = ""
+    for page in reader.pages:
+        page_text = page.extract_text() or ""
+        text_content += page_text + "\n"
+    return text_content, len(reader.pages)
+
+def _extract_csv_text(file_storage) -> tuple[str, dict]:
+    df = pd.read_csv(file_storage)
+    summary = []
+    summary.append("CSV Summary:")
+    summary.append(f"Rows: {len(df)}, Columns: {len(df.columns)}")
+    summary.append("Columns and dtypes:")
+    summary.append(str(df.dtypes))
+    # sample
+    summary.append("\nHead (first 5 rows):")
+    summary.append(df.head(5).to_csv(index=False))
+    return "\n".join(map(str, summary)), {"rows": len(df), "columns": len(df.columns)}
+
+def _extract_excel_text(file_storage) -> tuple[str, dict]:
+    # Read first sheet by default
+    xl = pd.read_excel(file_storage, sheet_name=None)
+    summary = []
+    meta = {}
+    for idx, (sheet_name, df) in enumerate(xl.items()):
+        summary.append(f"Sheet: {sheet_name} — Rows: {len(df)}, Columns: {len(df.columns)}")
+        summary.append(str(df.dtypes))
+        summary.append("\nHead (first 5 rows):")
+        summary.append(df.head(5).to_csv(index=False))
+        if idx == 0:
+            meta = {"sheet": sheet_name, "rows": len(df), "columns": len(df.columns)}
+        # Limit amount of text captured from multiple sheets
+        if len("\n".join(summary)) > MAX_CONTEXT_CHARS:
+            break
+    return "\n".join(map(str, summary)), meta
+
+def _extract_ppt_text(file_storage) -> tuple[str, int]:
+    prs = Presentation(BytesIO(file_storage.read()))
+    lines = []
+    for i, slide in enumerate(prs.slides, start=1):
+        lines.append(f"Slide {i}:")
+        # Gather text from shapes
+        for shape in slide.shapes:
+            if hasattr(shape, "text") and shape.text:
+                lines.append(shape.text)
+        if len("\n".join(lines)) > MAX_CONTEXT_CHARS:
+            break
+    return "\n".join(lines), len(prs.slides)
 
 
 @chat_bp.route('/chat', methods=['POST'])
@@ -55,23 +114,23 @@ def chat():
             db.session.add(chat_session)
             db.session.flush()  # ensure session exists before adding messages
 
-        # Determine any PDF context for this session
-        pdf_content_for_session = session_pdf_content.get(session_id, "")
+        # Determine any document context for this session
+        doc_content_for_session = session_doc_content.get(session_id, "")
 
         # Save the user message
         user_msg = ChatMessage(
             session_id=session_id,
             message_type='user',
             content=user_message,
-            has_pdf_context=bool(pdf_content_for_session),
+            has_pdf_context=bool(doc_content_for_session),
         )
         db.session.add(user_msg)
 
         # Compose prompt/context
-        if pdf_content_for_session:
+        if doc_content_for_session:
             prompt = (
-                "Use the following PDF content to answer.\n\nPDF:\n"
-                f"{pdf_content_for_session}\n\nUser question:\n{user_message}"
+                "Use the following document content to answer.\n\nDOCUMENT:\n"
+                f"{doc_content_for_session}\n\nUser question:\n{user_message}"
             )
         else:
             prompt = user_message
@@ -89,7 +148,7 @@ def chat():
             session_id=session_id,
             message_type='bot',
             content=bot_text,
-            has_pdf_context=bool(pdf_content_for_session),
+            has_pdf_context=bool(doc_content_for_session),
         )
         db.session.add(bot_msg)
 
@@ -100,7 +159,7 @@ def chat():
 
         return jsonify({
             'response': bot_text,
-            'has_pdf_context': bool(pdf_content_for_session),
+            'has_pdf_context': bool(doc_content_for_session),
             'session_id': session_id
         })
 
@@ -197,8 +256,8 @@ def create_new_session():
         return jsonify({'error': str(e)}), 500
 
 
-@chat_bp.route('/upload-pdf', methods=['POST'])
-def upload_pdf():
+@chat_bp.route('/upload-file', methods=['POST'])
+def upload_file():
     try:
         # session_id can be sent in form-data or as a query param
         session_id = (request.form.get('session_id')
@@ -220,40 +279,57 @@ def upload_pdf():
         file = request.files['file']
         if not file.filename:
             return jsonify({'error': 'No file selected'}), 400
-        if not file.filename.lower().endswith('.pdf'):
-            return jsonify({'error': 'Only PDF files are allowed'}), 400
+        name_lower = file.filename.lower()
+        result = { 'session_id': session_id }
 
-        reader = PyPDF2.PdfReader(BytesIO(file.read()))
-        text_content = ""
-        for page in reader.pages:
-            # PyPDF2 extract_text() can return None; guard it
-            page_text = page.extract_text() or ""
-            text_content += page_text + "\n"
+        if name_lower.endswith('.pdf'):
+            text_content, pages = _extract_pdf_text(file)
+            result.update({'message': 'File uploaded successfully', 'kind': 'pdf', 'pages': pages})
+        elif name_lower.endswith('.csv'):
+            text_content, meta = _extract_csv_text(file)
+            result.update({'message': 'File uploaded successfully', 'kind': 'csv', **meta})
+        elif name_lower.endswith('.xlsx'):
+            text_content, meta = _extract_excel_text(file)
+            result.update({'message': 'File uploaded successfully', 'kind': 'xlsx', **meta})
+        elif name_lower.endswith('.ppt') or name_lower.endswith('.pptx'):
+            text_content, slides = _extract_ppt_text(file)
+            result.update({'message': 'File uploaded successfully', 'kind': 'pptx', 'slides': slides})
+        else:
+            return jsonify({'error': 'Unsupported file type. Allowed: .pdf, .csv, .xlsx, .ppt, .pptx'}), 400
 
-        # Store PDF text for this session only
-        session_pdf_content[session_id] = text_content
+        # Store document text for this session only (truncated)
+        text_content = _truncate(text_content)
+        session_doc_content[session_id] = text_content
 
         preview = (text_content[:200] + "...") if len(text_content) > 200 else text_content
-        return jsonify({
-            'message': 'PDF uploaded successfully',
-            'pages': len(reader.pages),
-            'preview': preview,
-            'session_id': session_id
-        })
+        result['preview'] = preview
+        return jsonify(result)
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
 
-@chat_bp.route('/clear-pdf', methods=['POST'])
-def clear_pdf():
+@chat_bp.route('/clear-file', methods=['POST'])
+def clear_file():
     data = request.get_json(silent=True) or {}
     session_id = (data.get('session_id') or request.args.get('session_id') or '').strip()
 
     # If a session_id is provided, clear only that session's PDF content
     if session_id:
-        session_pdf_content.pop(session_id, None)
-        return jsonify({'message': 'PDF content cleared for session', 'session_id': session_id})
+        session_doc_content.pop(session_id, None)
+        return jsonify({'message': 'Document content cleared for session', 'session_id': session_id})
 
     # Fallback: clear all (avoids stale state, but should not usually be needed)
-    session_pdf_content.clear()
-    return jsonify({'message': 'All PDF content cleared'})
+    session_doc_content.clear()
+    return jsonify({'message': 'All document content cleared'})
+
+
+# Deprecated routes kept for backward compatibility with existing frontends
+@chat_bp.route('/upload-pdf', methods=['POST'])
+def upload_pdf():
+    # Delegate to /upload-file for PDF case only
+    return upload_file()
+
+
+@chat_bp.route('/clear-pdf', methods=['POST'])
+def clear_pdf():
+    return clear_file()

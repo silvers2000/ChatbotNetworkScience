@@ -274,12 +274,25 @@ function App() {
     const file = event.target.files[0]
     if (!file) return
 
-    if (file.type !== 'application/pdf') {
-      alert('Please upload only PDF files')
+    // Accept PDF, CSV, XLSX, PPT, PPTX
+    const allowed = [
+      'application/pdf',
+      'text/csv',
+      // Excel MIME types
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      'application/vnd.ms-excel',
+      // PowerPoint MIME types
+      'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+      'application/vnd.ms-powerpoint'
+    ]
+    const nameLower = file.name.toLowerCase()
+    const allowedByExt = [ '.pdf', '.csv', '.xlsx', '.ppt', '.pptx' ].some(ext => nameLower.endsWith(ext))
+    if (!allowedByExt && !allowed.includes(file.type)) {
+      alert('Please upload only PDF, CSV, XLSX, PPT, or PPTX files')
       return
     }
 
-    // Ensure a session exists before uploading so the PDF is scoped correctly
+    // Ensure a session exists before uploading so the document is scoped correctly
     let sessionIdToUse = currentSessionId
     if (!sessionIdToUse) {
       try {
@@ -299,7 +312,7 @@ function App() {
     if (sessionIdToUse) formData.append('session_id', sessionIdToUse)
 
     try {
-      const response = await fetch('/api/upload-pdf', {
+      const response = await fetch('/api/upload-file', {
         method: 'POST',
         body: formData,
       })
@@ -310,17 +323,20 @@ function App() {
         const effectiveSessionId = data.session_id || sessionIdToUse || currentSessionId
         setUploadedFile({
           name: file.name,
-          pages: data.pages,
           preview: data.preview,
           sessionId: effectiveSessionId,
+          meta: { kind: data.kind, pages: data.pages, slides: data.slides, rows: data.rows, columns: data.columns }
         })
         if (effectiveSessionId) {
           setCurrentSessionId(effectiveSessionId)
         }
         
+        const detail = data.kind === 'pdf' && data.pages ? `${data.pages} pages` :
+                       data.kind === 'pptx' && data.slides ? `${data.slides} slides` :
+                       (data.rows !== undefined && data.columns !== undefined) ? `${data.rows} rows, ${data.columns} columns` : ''
         const uploadMessage = { 
           type: 'system', 
-          content: `PDF "${file.name}" uploaded successfully! (${data.pages} pages). You can now ask questions about the document.` 
+          content: `Document "${file.name}" uploaded successfully! ${detail ? '(' + detail + ')' : ''} You can now ask questions about the document.` 
         }
         setMessages(prev => [...prev, uploadMessage])
       } else {
@@ -524,7 +540,7 @@ function App() {
               </div>
             </div>
             
-            {/* PDF Upload Section */}
+            {/* Document Upload Section */}
             <div className="flex items-center gap-4">
               <Button
                 onClick={() => fileInputRef.current?.click()}
@@ -533,12 +549,12 @@ function App() {
                 className="flex items-center gap-2"
               >
                 <Upload className="h-4 w-4" />
-                Upload PDF
+                Upload Document
               </Button>
               <input
                 ref={fileInputRef}
                 type="file"
-                accept=".pdf"
+                accept=".pdf,.csv,.xlsx,.ppt,.pptx"
                 onChange={handleFileUpload}
                 className="hidden"
               />
@@ -546,7 +562,7 @@ function App() {
                 <div className="flex items-center gap-2">
                   <Badge variant="secondary" className="flex items-center gap-1">
                     <FileText className="h-3 w-3" />
-                    {uploadedFile.name} ({uploadedFile.pages} pages)
+                    {uploadedFile.name}
                   </Badge>
                   <Button
                     onClick={clearPdf}
@@ -571,7 +587,7 @@ function App() {
                   <Bot className="h-16 w-16 mx-auto mb-4 text-gray-400" />
                   <h3 className="text-lg font-medium mb-2">Welcome to AI Chatbot</h3>
                   <p className="text-sm mb-4">
-                    Start a conversation, upload a PDF document, or use voice input to begin chatting with our AI assistant.
+                     Start a conversation, upload a document (PDF/Excel/PPT/CSV), or use voice input to begin chatting with our AI assistant.
                   </p>
                   <div className="flex flex-wrap justify-center gap-2 text-xs">
                     <Badge variant="outline">PDF Analysis</Badge>
@@ -618,7 +634,7 @@ function App() {
                         {message.hasPdfContext && (
                           <Badge variant="outline" className="mt-2 text-xs">
                             <FileText className="h-3 w-3 mr-1" />
-                            Based on PDF
+                            Based on document
                           </Badge>
                         )}
                         {message.timestamp && (
