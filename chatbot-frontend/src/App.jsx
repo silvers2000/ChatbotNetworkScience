@@ -590,7 +590,7 @@ function App() {
                      Start a conversation, upload a document (PDF/Excel/PPT/CSV), or use voice input to begin chatting with our AI assistant.
                   </p>
                   <div className="flex flex-wrap justify-center gap-2 text-xs">
-                    <Badge variant="outline">PDF Analysis</Badge>
+                    <Badge variant="outline">Document Analysis</Badge>
                     <Badge variant="outline">Voice Input</Badge>
                     <Badge variant="outline">Chat History</Badge>
                     <Badge variant="outline">User Accounts</Badge>

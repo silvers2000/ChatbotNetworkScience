@@ -7,7 +7,7 @@ This is a full‑stack AI chatbot built for the Network Science assignment. It p
 
 ### Features
 - **Chat with AI**: Conversational interface backed by Gemini.
-- **PDF understanding**: Upload a PDF and ask questions “based on the document.”
+- **Document analysis (PDF/CSV/XLSX/PPT/PPTX)**: Upload a document and ask questions “based on the document.”
 - **Session history**: Create, list, load, and delete chat sessions.
 - **Authentication**: Sign up, log in, and maintain a session token.
 - **Voice input**: Dictate your prompt using the Web Speech API.
@@ -68,8 +68,9 @@ Note: Whenever you change the frontend, rebuild and copy `dist` into `chatbot-ba
 - `GET /api/chat/sessions/:session_id` — fetch a session and its messages
 - `DELETE /api/chat/sessions/:session_id` — delete a session
 - `POST /api/chat/new-session` — create a new session
-- `POST /api/upload-pdf` — upload a PDF for the current session
-- `POST /api/clear-pdf` — clear PDF context
+- `POST /api/upload-file` — upload a document (PDF/CSV/XLSX/PPT/PPTX) for the current session
+- `POST /api/clear-file` — clear document context
+- Legacy compatibility: `/api/upload-pdf` and `/api/clear-pdf` still work
 - `POST /api/auth/signup` — create account
 - `POST /api/auth/login` — login and receive `session_token`
 - `POST /api/auth/logout` — logout
