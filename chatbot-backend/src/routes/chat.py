@@ -3,37 +3,52 @@ import google.generativeai as genai
 import os
 import PyPDF2
 from io import BytesIO
-from dotenv import load_dotenv; load_dotenv()
+from dotenv import load_dotenv
 from uuid import uuid4
+from pdfminer.high_level import extract_text as pdfminer_extract_text
 
+load_dotenv()
 key = os.getenv("GEMINI_API_KEY")
 if not key:
     raise RuntimeError("GEMINI_API_KEY not set")
 genai.configure(api_key=key)
-
-
-chat_bp = Blueprint('chat', __name__)
-
-# Configure Gemini API
-genai.configure(api_key=os.getenv('GEMINI_API_KEY'))
-model = genai.GenerativeModel('gemini-2.5-flash', system_instruction=(
+model = genai.GenerativeModel(
+    'gemini-2.5-flash',
+    system_instruction=(
         "You are a professional chatbot. Always answer in clean Markdown with:\n"
         "- short title line\n- bullet points\n- bold keywords\n"
         "- tables when comparing items\n- code blocks for code."
-    ))
+    ),
+)
+
+chat_bp = Blueprint('chat', __name__)
 
 # Hold PDF text by id (simple in-memory cache for this assignment)
 PDF_STORE = {}  # { pdf_id: "full text ..." }
 
 def extract_pdf_text(file_storage):
-    reader = PyPDF2.PdfReader(file_storage.stream)
-    parts = []
-    for p in reader.pages:
+    """Extract text and page count from an uploaded PDF file."""
+    pdf_bytes = file_storage.read()
+    text = ""
+    pages = 0
+    try:
+        reader = PyPDF2.PdfReader(BytesIO(pdf_bytes))
+        pages = len(reader.pages)
+        parts = []
+        for p in reader.pages:
+            try:
+                parts.append(p.extract_text() or "")
+            except Exception:
+                parts.append("")
+        text = "\n\n".join(parts).strip()
+    except Exception:
+        pass
+    if not text:
         try:
-            parts.append(p.extract_text() or "")
+            text = pdfminer_extract_text(BytesIO(pdf_bytes)).strip()
         except Exception:
-            parts.append("")
-    return "\n\n".join(parts).strip()
+            text = ""
+    return text, pages
 
 @chat_bp.route("/upload-pdf", methods=["POST"])
 def upload_pdf():
@@ -41,7 +56,10 @@ def upload_pdf():
     if not f:
         return jsonify({"error": "No file uploaded"}), 400
 
-    text = extract_pdf_text(f)
+    text, pages = extract_pdf_text(f)
+    if not text:
+        return jsonify({"error": "Could not extract text from PDF"}), 400
+
     pdf_id = str(uuid4())
     PDF_STORE[pdf_id] = text
 
@@ -49,6 +67,7 @@ def upload_pdf():
     return jsonify({
         "message": "PDF uploaded successfully",
         "pdf_id": pdf_id,
+        "pages": pages,
         "preview": preview
     })
 
@@ -58,6 +77,12 @@ def chat():
     user_msg = (data.get("message") or "").strip()
     pdf_id = data.get("pdf_id")  # <-- FE sends this ONLY when using the PDF
     pdf_text = PDF_STORE.get(pdf_id)
+
+    if pdf_id and pdf_text is None:
+        return jsonify({"reply": "PDF context not found. Please re-upload the document.", "hasPdfContext": False})
+
+    if pdf_text == "":
+        return jsonify({"reply": "I couldn't extract any text from the PDF. Make sure it contains selectable text.", "hasPdfContext": False})
 
     if pdf_text:
         prompt = (

@@ -32,6 +32,7 @@ pydantic==2.11.7
 pydantic_core==2.33.2
 pyparsing==3.2.3
 PyPDF2==3.0.1
+pdfminer.six==20240706
 requests==2.32.4
 rsa==4.9.1
 SQLAlchemy==2.0.41
