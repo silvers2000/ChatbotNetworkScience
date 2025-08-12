@@ -1,0 +1,32 @@
+# Node
+node_modules/
+chatbot-frontend/node_modules/
+chatbot-frontend/dist/
+chatbot-frontend/.vite/
+chatbot-frontend/chatbot-frontend.zip
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+env/
+chatbot-backend/venvchat/
+
+# Environment files
+.env
+*.env
+chatbot-backend/.env
+chatbot-frontend/.env
+
+# Database files
+chatbot-backend/src/database/app.db
+chatbot-backend/src/database/*.db
+
+# Local documents
+Chatbot_Assignment.pdf
+
+# OS junk
+.DS_Store
+Thumbs.db
+
