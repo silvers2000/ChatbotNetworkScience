@@ -4,6 +4,8 @@ import os
 import PyPDF2
 from io import BytesIO
 from dotenv import load_dotenv; load_dotenv()
+from uuid import uuid4
+
 key = os.getenv("GEMINI_API_KEY")
 if not key:
     raise RuntimeError("GEMINI_API_KEY not set")
@@ -20,73 +22,72 @@ model = genai.GenerativeModel('gemini-2.5-flash', system_instruction=(
         "- tables when comparing items\n- code blocks for code."
     ))
 
-# Store PDF content in memory (in production, use a proper database)
-pdf_content = ""
+# Hold PDF text by id (simple in-memory cache for this assignment)
+PDF_STORE = {}  # { pdf_id: "full text ..." }
 
-@chat_bp.route('/chat', methods=['POST'])
-def chat():
-    try:
-        data = request.json
-        user_message = data.get('message', '')
-        
-        if not user_message:
-            return jsonify({'error': 'Message is required'}), 400
-        
-        # Create context with PDF content if available
-        context = ""
-        if pdf_content:
-            context = f"Based on the uploaded PDF document content:\n{pdf_content}\n\nUser question: {user_message}"
-        else:
-            context = user_message
-        
-        # Generate response using Gemini
-        response = model.generate_content(context)
-        
-        return jsonify({
-            'response': response.text,
-            'has_pdf_context': bool(pdf_content)
-        })
-        
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
+def extract_pdf_text(file_storage):
+    reader = PyPDF2.PdfReader(file_storage.stream)
+    parts = []
+    for p in reader.pages:
+        try:
+            parts.append(p.extract_text() or "")
+        except Exception:
+            parts.append("")
+    return "\n\n".join(parts).strip()
 
-@chat_bp.route('/upload-pdf', methods=['POST'])
+@chat_bp.route("/upload-pdf", methods=["POST"])
 def upload_pdf():
-    global pdf_content
-    
-    try:
-        if 'file' not in request.files:
-            return jsonify({'error': 'No file provided'}), 400
-        
-        file = request.files['file']
-        
-        if file.filename == '':
-            return jsonify({'error': 'No file selected'}), 400
-        
-        if not file.filename.lower().endswith('.pdf'):
-            return jsonify({'error': 'Only PDF files are allowed'}), 400
-        
-        # Read PDF content
-        pdf_reader = PyPDF2.PdfReader(BytesIO(file.read()))
-        text_content = ""
-        
-        for page in pdf_reader.pages:
-            text_content += page.extract_text() + "\n"
-        
-        pdf_content = text_content
-        
-        return jsonify({
-            'message': 'PDF uploaded successfully',
-            'pages': len(pdf_reader.pages),
-            'preview': text_content[:200] + "..." if len(text_content) > 200 else text_content
-        })
-        
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
+    f = request.files.get("file")
+    if not f:
+        return jsonify({"error": "No file uploaded"}), 400
 
-@chat_bp.route('/clear-pdf', methods=['POST'])
+    text = extract_pdf_text(f)
+    pdf_id = str(uuid4())
+    PDF_STORE[pdf_id] = text
+
+    preview = (text[:200] + "...") if len(text) > 200 else text
+    return jsonify({
+        "message": "PDF uploaded successfully",
+        "pdf_id": pdf_id,
+        "preview": preview
+    })
+
+@chat_bp.route("/chat", methods=["POST"])
+def chat():
+    data = request.get_json(force=True)
+    user_msg = (data.get("message") or "").strip()
+    pdf_id = data.get("pdf_id")  # <-- FE sends this ONLY when using the PDF
+    pdf_text = PDF_STORE.get(pdf_id)
+
+    if pdf_text:
+        prompt = (
+            "You are a professional chatbot. Answer in clean Markdown. "
+            "Use ONLY the document when relevant.\n\n"
+            f"--- DOCUMENT START ---\n{pdf_text}\n--- DOCUMENT END ---\n\n"
+            f"User: {user_msg}"
+        )
+    else:
+        prompt = f"You are a professional chatbot. Answer in clean Markdown.\n\nUser: {user_msg}"
+
+    resp = model.generate_content(prompt)
+
+    # defensive extraction (handles empty/blocked responses)
+    reply = getattr(resp, "text", "") or ""
+    if not reply and getattr(resp, "candidates", None):
+        chunks = []
+        for c in resp.candidates:
+            content = getattr(c, "content", None)
+            for part in getattr(content, "parts", []) if content else []:
+                if getattr(part, "text", None):
+                    chunks.append(part.text)
+        reply = "\n".join(chunks)
+
+    return jsonify({"reply": reply or "Sorry, I couldn’t generate a response.", "hasPdfContext": bool(pdf_text)})
+
+@chat_bp.route("/clear-pdf", methods=["POST"])
 def clear_pdf():
-    global pdf_content
-    pdf_content = ""
-    return jsonify({'message': 'PDF content cleared'})
-
+    """Optional: clear a specific pdf_id if the FE sends one."""
+    pdf_id = (request.get_json() or {}).get("pdf_id")
+    if pdf_id and pdf_id in PDF_STORE:
+        del PDF_STORE[pdf_id]
+    return jsonify({"message": "OK"})

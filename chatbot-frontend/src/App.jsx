@@ -8,7 +8,6 @@ import './App.css'
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
-
 function App() {
   const [messages, setMessages] = useState([])
   const [inputMessage, setInputMessage] = useState('')
@@ -18,6 +17,9 @@ function App() {
   const [recognition, setRecognition] = useState(null)
   const fileInputRef = useRef(null)
   const messagesEndRef = useRef(null)
+
+  // NEW: active PDF session id (sent only when present)
+  const [pdfId, setPdfId] = useState(null)
 
   // Initialize speech recognition
   useEffect(() => {
@@ -33,15 +35,8 @@ function App() {
         setInputMessage(transcript)
         setIsListening(false)
       }
-      
-      recognitionInstance.onerror = () => {
-        setIsListening(false)
-      }
-      
-      recognitionInstance.onend = () => {
-        setIsListening(false)
-      }
-      
+      recognitionInstance.onerror = () => setIsListening(false)
+      recognitionInstance.onend = () => setIsListening(false)
       setRecognition(recognitionInstance)
     }
   }, [])
@@ -56,25 +51,26 @@ function App() {
 
     const userMessage = { type: 'user', content: inputMessage }
     setMessages(prev => [...prev, userMessage])
+    const outgoing = inputMessage
     setInputMessage('')
     setIsLoading(true)
 
     try {
+      const body = { message: outgoing }
+      if (pdfId) body.pdf_id = pdfId   // <-- attach pdf_id only if present
+
       const response = await fetch('/api/chat', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ message: inputMessage }),
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
       })
 
       const data = await response.json()
-      
       if (response.ok) {
         const botMessage = { 
           type: 'bot', 
-          content: data.response,
-          hasPdfContext: data.has_pdf_context 
+          content: data.reply,              // <-- backend returns { reply, hasPdfContext }
+          hasPdfContext: data.hasPdfContext //     not response / has_pdf_context
         }
         setMessages(prev => [...prev, botMessage])
       } else {
@@ -94,7 +90,6 @@ function App() {
   const handleFileUpload = async (event) => {
     const file = event.target.files[0]
     if (!file) return
-
     if (file.type !== 'application/pdf') {
       alert('Please upload only PDF files')
       return
@@ -108,16 +103,17 @@ function App() {
         method: 'POST',
         body: formData,
       })
-
       const data = await response.json()
-      
+
+      // Save pdf_id from backend so subsequent chats can reference this PDF
+      setPdfId(data.pdf_id || null)
+
       if (response.ok) {
         setUploadedFile({
           name: file.name,
           pages: data.pages,
           preview: data.preview
         })
-        
         const uploadMessage = { 
           type: 'system', 
           content: `PDF "${file.name}" uploaded successfully! (${data.pages} pages). You can now ask questions about the document.` 
@@ -128,22 +124,29 @@ function App() {
       }
     } catch (error) {
       alert(`Upload failed: ${error.message}`)
+    } finally {
+      // reset input so the same file can be re-selected if needed
+      if (fileInputRef.current) fileInputRef.current.value = ''
     }
   }
 
   const clearPdf = async () => {
     try {
-      await fetch('/api/clear-pdf', { method: 'POST' })
-      setUploadedFile(null)
-      
-      const clearMessage = { 
-        type: 'system', 
-        content: 'PDF document cleared. You can now chat normally or upload a new document.' 
-      }
-      setMessages(prev => [...prev, clearMessage])
-    } catch (error) {
-      console.error('Failed to clear PDF:', error)
+      // Optional: tell backend to clear if it stores per-id (harmless if not found)
+      await fetch('/api/clear-pdf', { 
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pdf_id: pdfId })
+      })
+    } catch (_) {}
+    // Always clear client-side state
+    setPdfId(null)
+    setUploadedFile(null)
+    const clearMessage = { 
+      type: 'system', 
+      content: 'PDF context cleared. You can now chat normally or upload a new document.' 
     }
+    setMessages(prev => [...prev, clearMessage])
   }
 
   const toggleVoiceInput = () => {
@@ -151,7 +154,6 @@ function App() {
       alert('Speech recognition is not supported in your browser')
       return
     }
-
     if (isListening) {
       recognition.stop()
       setIsListening(false)
@@ -213,6 +215,7 @@ function App() {
                       variant="ghost"
                       size="sm"
                       className="h-6 w-6 p-0"
+                      title="Clear current PDF context"
                     >
                       <X className="h-3 w-3" />
                     </Button>
@@ -346,4 +349,3 @@ function App() {
 }
 
 export default App
-
