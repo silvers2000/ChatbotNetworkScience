@@ -3,12 +3,13 @@ from flask import Blueprint, jsonify, request
 import google.generativeai as genai
 import os
 import PyPDF2
-from io import BytesIO
+from io import BytesIO, StringIO
 import uuid
 from datetime import datetime
 from dotenv import load_dotenv
-import pandas as pd
 from pptx import Presentation
+import csv
+from openpyxl import load_workbook
 
 from src.models.user import db
 from src.models.auth import UserSession
@@ -42,33 +43,76 @@ def _extract_pdf_text(file_storage) -> tuple[str, int]:
     return text_content, len(reader.pages)
 
 def _extract_csv_text(file_storage) -> tuple[str, dict]:
-    df = pd.read_csv(file_storage)
-    summary = []
-    summary.append("CSV Summary:")
-    summary.append(f"Rows: {len(df)}, Columns: {len(df.columns)}")
-    summary.append("Columns and dtypes:")
-    summary.append(str(df.dtypes))
-    # sample
-    summary.append("\nHead (first 5 rows):")
-    summary.append(df.head(5).to_csv(index=False))
-    return "\n".join(map(str, summary)), {"rows": len(df), "columns": len(df.columns)}
+    # Read bytes and decode to text for csv reader
+    data_bytes = file_storage.read()
+    try:
+        text = data_bytes.decode('utf-8', errors='replace')
+    except Exception:
+        text = data_bytes.decode('latin-1', errors='replace')
+
+    f = StringIO(text)
+    reader = csv.reader(f)
+    rows = []
+    header = None
+    row_count = 0
+    max_preview_rows = 5
+    for i, row in enumerate(reader):
+        if i == 0:
+            header = row
+        else:
+            if len(rows) < max_preview_rows:
+                rows.append(row)
+        row_count += 1
+        if len("\n".join([",	".join(r) for r in rows])) > MAX_CONTEXT_CHARS:
+            break
+
+    columns = len(header) if header else 0
+    summary_lines = [
+        "CSV Summary:",
+        f"Rows (including header): {row_count}",
+        f"Columns: {columns}",
+        "\nHeader:",
+        ", ".join(header or [])
+    ]
+    if rows:
+        summary_lines.append("\nHead (first 5 data rows):")
+        for r in rows:
+            summary_lines.append(", ".join(r))
+    return "\n".join(summary_lines), {"rows": max(row_count - 1, 0), "columns": columns}
 
 def _extract_excel_text(file_storage) -> tuple[str, dict]:
-    # Read first sheet by default
-    xl = pd.read_excel(file_storage, sheet_name=None)
-    summary = []
-    meta = {}
-    for idx, (sheet_name, df) in enumerate(xl.items()):
-        summary.append(f"Sheet: {sheet_name} — Rows: {len(df)}, Columns: {len(df.columns)}")
-        summary.append(str(df.dtypes))
-        summary.append("\nHead (first 5 rows):")
-        summary.append(df.head(5).to_csv(index=False))
-        if idx == 0:
-            meta = {"sheet": sheet_name, "rows": len(df), "columns": len(df.columns)}
-        # Limit amount of text captured from multiple sheets
-        if len("\n".join(summary)) > MAX_CONTEXT_CHARS:
-            break
-    return "\n".join(map(str, summary)), meta
+    # Load workbook in read-only mode
+    wb = load_workbook(filename=BytesIO(file_storage.read()), read_only=True, data_only=True)
+    sheet = wb.active
+    sheet_name = sheet.title
+    max_rows = sheet.max_row or 0
+    max_cols = sheet.max_column or 0
+
+    # Header from first row
+    header = []
+    if max_rows >= 1:
+        header = [str(cell.value) if cell.value is not None else "" for cell in next(sheet.iter_rows(min_row=1, max_row=1, values_only=False))]
+
+    # First 5 data rows
+    preview_lines = []
+    if max_rows >= 2:
+        data_rows_iter = sheet.iter_rows(min_row=2, max_row=min(6, max_rows), values_only=True)
+        for row in data_rows_iter:
+            preview_lines.append(", ".join([str(v) if v is not None else "" for v in row]))
+
+    summary_lines = [
+        f"Excel Summary: Sheet '{sheet_name}'",
+        f"Rows (including header): {max_rows}",
+        f"Columns: {max_cols}",
+        "\nHeader:",
+        ", ".join(header)
+    ]
+    if preview_lines:
+        summary_lines.append("\nHead (first 5 data rows):")
+        summary_lines.extend(preview_lines)
+
+    text = "\n".join(summary_lines)
+    return text, {"sheet": sheet_name, "rows": max(max_rows - 1, 0), "columns": max_cols}
 
 def _extract_ppt_text(file_storage) -> tuple[str, int]:
     prs = Presentation(BytesIO(file_storage.read()))
