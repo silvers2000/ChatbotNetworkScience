@@ -698,7 +698,7 @@ function App() {
         {/* Footer */}
         <div className="bg-gray-50 border-t border-gray-200 px-4 py-2">
           <div className="text-center text-xs text-gray-500">
-            Powered by Gemini AI • Netscience Technologies
+            Developed by Rijul | Network Science Assignment
           </div>
         </div>
       </div>
